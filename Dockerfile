@@ -10,4 +10,6 @@ COPY --chown=${DEVBOX_USER}:${DEVBOX_USER} devbox.lock devbox.lock
 
 RUN devbox run sync
 
+EXPOSE 8765
+
 CMD ["devbox", "serve"]
