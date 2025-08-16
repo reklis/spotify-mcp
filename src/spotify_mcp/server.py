@@ -3,20 +3,31 @@ import base64
 import os
 import logging
 import sys
+import contextlib
 from enum import Enum
 import json
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Any
 from datetime import datetime
 from pathlib import Path
+from collections.abc import AsyncIterator
 
+import anyio
 import mcp.types as types
-from mcp.server import NotificationOptions, Server  # , stdio_server
-import mcp.server.stdio
+from mcp.server.lowlevel import Server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from pydantic import BaseModel, Field, AnyUrl
 from spotipy import SpotifyException
+from starlette.applications import Starlette
+from starlette.routing import Mount
+from starlette.types import Receive, Scope, Send
+import uvicorn
+from dotenv import load_dotenv
 
 from . import spotify_api
 from .utils import normalize_redirect_uri
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def setup_logger():
@@ -36,7 +47,7 @@ if spotify_api.REDIRECT_URI:
     spotify_api.REDIRECT_URI = normalize_redirect_uri(spotify_api.REDIRECT_URI)
 spotify_client = spotify_api.Client(logger)
 
-server = Server("spotify-mcp")
+app = Server("spotify-mcp")
 
 
 # options =
@@ -103,21 +114,20 @@ class Playlist(ToolModel):
     public: Optional[bool] = Field(default=True, description="Whether the playlist should be public (for create action).")
 
 
-@server.list_prompts()
+@app.list_prompts()
 async def handle_list_prompts() -> list[types.Prompt]:
     return []
 
 
-@server.list_resources()
+@app.list_resources()
 async def handle_list_resources() -> list[types.Resource]:
     return []
 
 
-@server.list_tools()
+@app.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
     """List available tools."""
     logger.info("Listing available tools")
-    # await server.request_context.session.send_notification("are you recieving this notification?")
     tools = [
         Playback.as_tool(),
         Search.as_tool(),
@@ -129,10 +139,10 @@ async def handle_list_tools() -> list[types.Tool]:
     return tools
 
 
-@server.call_tool()
+@app.call_tool()
 async def handle_call_tool(
-        name: str, arguments: dict | None
-) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        name: str, arguments: dict[str, Any]
+) -> list[types.ContentBlock]:
     """Handle tool execution requests."""
     logger.info(f"Tool called: {name} with arguments: {arguments}")
     assert name[:7] == "Spotify", f"Unknown tool: {name}"
@@ -376,13 +386,43 @@ async def handle_call_tool(
 
 
 async def main():
-    try:
-        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-            await server.run(
-                read_stream,
-                write_stream,
-                server.create_initialization_options()
-            )
-    except Exception as e:
-        logger.error(f"Server error occurred: {str(e)}")
-        raise
+    """Run the server using streamable HTTP transport."""
+    port = int(os.environ.get("SPOTIFY_MCP_PORT", "8765"))
+    
+    logger.info(f"Starting Spotify MCP HTTP server on port {port}")
+    
+    # Create the session manager with our app
+    session_manager = StreamableHTTPSessionManager(
+        app=app,
+        event_store=None,  # No event store for now
+        json_response=False,  # Use SSE by default
+    )
+    
+    # ASGI handler for streamable HTTP connections
+    async def handle_streamable_http(scope: Scope, receive: Receive, send: Send) -> None:
+        await session_manager.handle_request(scope, receive, send)
+    
+    @contextlib.asynccontextmanager
+    async def lifespan(app: Starlette) -> AsyncIterator[None]:
+        """Context manager for managing session manager lifecycle."""
+        async with session_manager.run():
+            logger.info("Spotify MCP server started with StreamableHTTP transport!")
+            logger.info(f"Server running at http://localhost:{port}/mcp")
+            try:
+                yield
+            finally:
+                logger.info("Spotify MCP server shutting down...")
+    
+    # Create an ASGI application using the transport
+    starlette_app = Starlette(
+        debug=True,
+        routes=[
+            Mount("/mcp", app=handle_streamable_http),
+        ],
+        lifespan=lifespan,
+    )
+    
+    # Run the server with uvicorn
+    config = uvicorn.Config(starlette_app, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
