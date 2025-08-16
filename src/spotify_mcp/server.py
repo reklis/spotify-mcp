@@ -67,11 +67,13 @@ class Playback(ToolModel):
     - start: Starts playing new item or resumes current playback if called with no uri.
     - pause: Pauses current playback.
     - skip: Skips current track.
+    - volume: Set playback volume.
     """
-    action: str = Field(description="Action to perform: 'get', 'start', 'pause' or 'skip'.")
+    action: str = Field(description="Action to perform: 'get', 'start', 'pause', 'skip', or 'volume'.")
     spotify_uri: Optional[str] = Field(default=None, description="Spotify uri of item to play for 'start' action. " +
                                                                  "If omitted, resumes current playback.")
     num_skips: Optional[int] = Field(default=1, description="Number of tracks to skip for `skip` action.")
+    volume_percent: Optional[int] = Field(default=None, description="Volume level (0-100) for 'volume' action.")
 
 
 class Queue(ToolModel):
@@ -188,6 +190,20 @@ async def handle_call_tool(
                         return [types.TextContent(
                             type="text",
                             text="Skipped to next track."
+                        )]
+                    case "volume":
+                        volume = arguments.get("volume_percent")
+                        if volume is None:
+                            return [types.TextContent(
+                                type="text",
+                                text="Volume level not specified. Please provide a value between 0 and 100."
+                            )]
+                        volume = max(0, min(100, int(volume)))
+                        logger.info(f"Setting volume to {volume}%")
+                        spotify_client.set_volume(volume)
+                        return [types.TextContent(
+                            type="text",
+                            text=f"Volume set to {volume}%."
                         )]
 
             case "Search":
