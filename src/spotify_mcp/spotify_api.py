@@ -40,48 +40,69 @@ class Client:
         scope = "user-library-read,user-read-playback-state,user-modify-playback-state,user-read-currently-playing,playlist-read-private,playlist-read-collaborative,playlist-modify-private,playlist-modify-public"
 
         try:
-            if REFRESH_TOKEN:
-                # Use refresh token to get access token
-                self.logger.info(f"Using refresh token from environment variable")
+            if REFRESH_TOKEN or ACCESS_TOKEN:
+                # Use tokens directly without OAuth flow
+                self.logger.info(f"Using tokens from environment variables")
                 self.logger.info(f"ACCESS_TOKEN provided: {bool(ACCESS_TOKEN)}")
-                self.logger.info(f"CLIENT_ID: {CLIENT_ID[:10]}..." if CLIENT_ID else "CLIENT_ID not set")
+                self.logger.info(f"REFRESH_TOKEN provided: {bool(REFRESH_TOKEN)}")
                 
-                # Create an in-memory cache with the refresh token
-                cache_handler = MemoryCacheHandler()
+                # Use local variables to avoid reassigning module-level variables
+                access_token = ACCESS_TOKEN
+                refresh_token = REFRESH_TOKEN
                 
-                # If we have an access token, try to use it; otherwise force immediate refresh
-                if ACCESS_TOKEN:
-                    # Assume token is valid for a short time to allow testing
-                    expires_at = int(time.time()) + 300  # 5 minutes
-                    self.logger.info("ACCESS_TOKEN provided, assuming valid for 5 minutes")
+                if refresh_token and (not access_token or len(access_token) < 50):
+                    # Need to refresh the access token
+                    self.logger.info("Refreshing access token using refresh token...")
+                    import requests
+                    import base64
+                    
+                    # Prepare the refresh request
+                    auth_str = f"{CLIENT_ID}:{CLIENT_SECRET}"
+                    b64_auth = base64.b64encode(auth_str.encode()).decode()
+                    
+                    headers = {
+                        "Authorization": f"Basic {b64_auth}",
+                        "Content-Type": "application/x-www-form-urlencoded"
+                    }
+                    
+                    data = {
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token
+                    }
+                    
+                    try:
+                        response = requests.post(
+                            "https://accounts.spotify.com/api/token",
+                            headers=headers,
+                            data=data
+                        )
+                        
+                        if response.status_code == 200:
+                            token_data = response.json()
+                            access_token = token_data.get("access_token")
+                            self.logger.info("Access token refreshed successfully")
+                            
+                            # Update refresh token if a new one was provided
+                            if token_data.get("refresh_token"):
+                                refresh_token = token_data.get("refresh_token")
+                                self.logger.info("Refresh token also updated")
+                        else:
+                            self.logger.error(f"Failed to refresh token: {response.status_code} - {response.text}")
+                    except Exception as e:
+                        self.logger.error(f"Error refreshing token: {str(e)}")
+                
+                if access_token:
+                    # Use the access token directly
+                    self.logger.info("Using access token directly")
+                    self.sp = spotipy.Spotify(auth=access_token)
+                    
+                    # Store tokens for potential refresh later
+                    self.access_token = access_token
+                    self.refresh_token = refresh_token
+                    self.auth_manager = None
+                    self.cache_handler = None
                 else:
-                    # Force immediate refresh by setting expiry in the past
-                    expires_at = int(time.time()) - 1
-                    self.logger.info("No ACCESS_TOKEN, will refresh immediately")
-                
-                token_info = {
-                    "access_token": ACCESS_TOKEN or "",
-                    "token_type": "Bearer",
-                    "expires_in": 3600,
-                    "refresh_token": REFRESH_TOKEN,
-                    "scope": scope,
-                    "expires_at": expires_at
-                }
-                cache_handler.save_token_to_cache(token_info)
-                
-                auth_manager = SpotifyOAuth(
-                    scope=scope,
-                    client_id=CLIENT_ID,
-                    client_secret=CLIENT_SECRET,
-                    redirect_uri=REDIRECT_URI or "http://127.0.0.1:8888",
-                    cache_handler=cache_handler
-                )
-                
-                # This will automatically refresh the token if needed
-                self.sp = spotipy.Spotify(auth_manager=auth_manager)
-                self.auth_manager = auth_manager
-                self.cache_handler = cache_handler
-                self.logger.info("Spotify client initialized with refresh token")
+                    raise ValueError("No valid access token available and couldn't refresh")
                 
             elif ACCESS_TOKEN:
                 # Use provided access token directly (no refresh capability)
@@ -390,19 +411,13 @@ class Client:
 
     def auth_ok(self) -> bool:
         try:
-            # If using direct access token without refresh capability
-            if ACCESS_TOKEN and not self.auth_manager:
-                # When using direct token, we can't check expiration easily
-                # Try a simple API call to verify token is valid
-                try:
-                    self.sp.current_user()
-                    self.logger.info("Auth check result: token valid (direct token)")
-                    return True
-                except Exception as e:
-                    self.logger.info(f"Auth check result: token invalid (direct token) - {str(e)}")
-                    return False
+            # When using direct tokens
+            if hasattr(self, 'access_token') and self.access_token:
+                # Assume token is valid - actual API calls will fail if not
+                self.logger.info("Auth check result: using stored access token")
+                return True
             
-            # If using auth manager (either OAuth flow or refresh token)
+            # If using auth manager (OAuth flow)
             if self.auth_manager and self.cache_handler:
                 token = self.cache_handler.get_cached_token()
                 if token is None:
@@ -411,7 +426,7 @@ class Client:
                     
                 is_expired = self.auth_manager.is_token_expired(token)
                 self.logger.info(f"Auth check result: token {'expired' if is_expired else 'valid'} (managed token)")
-                return not is_expired  # Return True if token is NOT expired
+                return not is_expired
             
             # No auth method available
             self.logger.error("Auth check result: no authentication method available")
@@ -419,21 +434,62 @@ class Client:
             
         except Exception as e:
             self.logger.error(f"Error checking auth status: {str(e)}", exc_info=True)
-            return False  # Return False on error rather than raising
+            return False
 
     def auth_refresh(self):
+        # Handle direct token refresh
+        if hasattr(self, 'refresh_token') and self.refresh_token:
+            self.logger.info("Attempting to refresh authentication token using stored refresh token")
+            import requests
+            import base64
+            
+            auth_str = f"{CLIENT_ID}:{CLIENT_SECRET}"
+            b64_auth = base64.b64encode(auth_str.encode()).decode()
+            
+            headers = {
+                "Authorization": f"Basic {b64_auth}",
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            
+            data = {
+                "grant_type": "refresh_token",
+                "refresh_token": self.refresh_token
+            }
+            
+            try:
+                response = requests.post(
+                    "https://accounts.spotify.com/api/token",
+                    headers=headers,
+                    data=data
+                )
+                
+                if response.status_code == 200:
+                    token_data = response.json()
+                    self.access_token = token_data.get("access_token")
+                    self.sp._auth = self.access_token  # Update spotipy's auth
+                    self.logger.info("Token refreshed successfully")
+                    
+                    if token_data.get("refresh_token"):
+                        self.refresh_token = token_data.get("refresh_token")
+                else:
+                    self.logger.error(f"Failed to refresh token: {response.status_code}")
+            except Exception as e:
+                self.logger.error(f"Error refreshing token: {str(e)}", exc_info=True)
+                raise
+            return
+            
+        # Handle OAuth manager refresh
         if not self.auth_manager:
-            self.logger.warning("Cannot refresh token without auth manager")
+            self.logger.warning("Cannot refresh token - no auth manager or refresh token")
             return
         
         try:
-            self.logger.info("Attempting to refresh authentication token")
+            self.logger.info("Attempting to refresh authentication token via auth manager")
             token = self.cache_handler.get_cached_token()
             refreshed_token = self.auth_manager.validate_token(token)
             
             if refreshed_token:
                 self.logger.info("Token refreshed successfully")
-                # Update the Spotify client with the new token
                 if refreshed_token != token:
                     self.sp._auth = refreshed_token.get('access_token')
             else:
