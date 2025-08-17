@@ -217,7 +217,6 @@ def validate(func: Callable[..., T]) -> Callable[..., T]:
     """
     Decorator for Spotify API methods that handles authentication and device validation.
     - Checks and refreshes authentication if needed
-    - Validates active device and retries with candidate device if needed
     """
 
     @functools.wraps(func)
@@ -225,10 +224,6 @@ def validate(func: Callable[..., T]) -> Callable[..., T]:
         # Handle authentication
         if not self.auth_ok():
             self.auth_refresh()
-
-        # Handle device validation
-        if not self.is_active_device():
-            kwargs['device'] = self._get_candidate_device()
 
         # TODO: try-except RequestException
         return func(self, *args, **kwargs)
