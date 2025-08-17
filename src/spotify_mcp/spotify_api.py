@@ -1,10 +1,11 @@
 import logging
 import os
+import time
 from typing import Optional, Dict, List
 
 import spotipy
 from dotenv import load_dotenv
-from spotipy.cache_handler import CacheFileHandler
+from spotipy.cache_handler import CacheFileHandler, MemoryCacheHandler
 from spotipy.oauth2 import SpotifyOAuth
 
 from . import utils
@@ -14,6 +15,8 @@ load_dotenv()
 CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
+ACCESS_TOKEN = os.getenv("SPOTIFY_ACCESS_TOKEN")
+REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
 
 # Normalize the redirect URI to meet Spotify's requirements
 if REDIRECT_URI:
@@ -36,14 +39,51 @@ class Client:
         scope = "user-library-read,user-read-playback-state,user-modify-playback-state,user-read-currently-playing,playlist-read-private,playlist-read-collaborative,playlist-modify-private,playlist-modify-public"
 
         try:
-            self.sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-                scope=scope,
-                client_id=CLIENT_ID,
-                client_secret=CLIENT_SECRET,
-                redirect_uri=REDIRECT_URI))
+            if REFRESH_TOKEN:
+                # Use refresh token to get access token
+                self.logger.info("Using refresh token from environment variable")
+                
+                # Create an in-memory cache with the refresh token
+                cache_handler = MemoryCacheHandler()
+                token_info = {
+                    "access_token": ACCESS_TOKEN or "",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                    "refresh_token": REFRESH_TOKEN,
+                    "scope": scope,
+                    "expires_at": int(time.time()) - 1 if not ACCESS_TOKEN else int(time.time()) + 3600
+                }
+                cache_handler.save_token_to_cache(token_info)
+                
+                auth_manager = SpotifyOAuth(
+                    scope=scope,
+                    client_id=CLIENT_ID,
+                    client_secret=CLIENT_SECRET,
+                    redirect_uri=REDIRECT_URI,
+                    cache_handler=cache_handler
+                )
+                
+                # This will automatically refresh the token if needed
+                self.sp = spotipy.Spotify(auth_manager=auth_manager)
+                self.auth_manager = auth_manager
+                self.cache_handler = cache_handler
+                
+            elif ACCESS_TOKEN:
+                # Use provided access token directly (no refresh capability)
+                self.logger.info("Using access token from environment variable (no refresh)")
+                self.sp = spotipy.Spotify(auth=ACCESS_TOKEN)
+                self.auth_manager = None
+                self.cache_handler = None
+            else:
+                # Use OAuth flow with file cache
+                self.sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
+                    scope=scope,
+                    client_id=CLIENT_ID,
+                    client_secret=CLIENT_SECRET,
+                    redirect_uri=REDIRECT_URI))
 
-            self.auth_manager: SpotifyOAuth = self.sp.auth_manager
-            self.cache_handler: CacheFileHandler = self.auth_manager.cache_handler
+                self.auth_manager: SpotifyOAuth = self.sp.auth_manager
+                self.cache_handler: CacheFileHandler = self.auth_manager.cache_handler
         except Exception as e:
             self.logger.error(f"Failed to initialize Spotify client: {str(e)}")
             raise
@@ -333,6 +373,17 @@ class Client:
 
     def auth_ok(self) -> bool:
         try:
+            if ACCESS_TOKEN:
+                # When using direct token, we can't check expiration easily
+                # Try a simple API call to verify token is valid
+                try:
+                    self.sp.current_user()
+                    self.logger.info("Auth check result: token valid")
+                    return True
+                except:
+                    self.logger.info("Auth check result: token invalid")
+                    return False
+            
             token = self.cache_handler.get_cached_token()
             if token is None:
                 self.logger.info("Auth check result: no token exists")
@@ -346,6 +397,9 @@ class Client:
             return False  # Return False on error rather than raising
 
     def auth_refresh(self):
+        if not self.auth_manager:
+            self.logger.warning("Cannot refresh token without auth manager")
+            return
         self.auth_manager.validate_token(self.cache_handler.get_cached_token())
 
     def skip_track(self, n=1):
