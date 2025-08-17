@@ -222,10 +222,21 @@ def validate(func: Callable[..., T]) -> Callable[..., T]:
     @functools.wraps(func)
     def wrapper(self, *args, **kwargs):
         # Handle authentication
-        if not self.auth_ok():
+        self.logger.debug(f"Validate decorator: checking auth for {func.__name__}")
+        auth_status = self.auth_ok()
+        self.logger.debug(f"Validate decorator: auth_ok returned {auth_status}")
+        
+        if not auth_status:
+            self.logger.info(f"Validate decorator: auth check failed, attempting refresh")
             self.auth_refresh()
+            # Check again after refresh
+            auth_status = self.auth_ok()
+            if not auth_status:
+                self.logger.error(f"Validate decorator: auth still invalid after refresh")
+                raise Exception("Authentication failed even after refresh attempt")
 
         # TODO: try-except RequestException
+        self.logger.debug(f"Validate decorator: proceeding with {func.__name__}")
         return func(self, *args, **kwargs)
 
     return wrapper

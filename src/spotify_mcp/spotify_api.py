@@ -42,17 +42,30 @@ class Client:
         try:
             if REFRESH_TOKEN:
                 # Use refresh token to get access token
-                self.logger.info("Using refresh token from environment variable")
+                self.logger.info(f"Using refresh token from environment variable")
+                self.logger.info(f"ACCESS_TOKEN provided: {bool(ACCESS_TOKEN)}")
+                self.logger.info(f"CLIENT_ID: {CLIENT_ID[:10]}..." if CLIENT_ID else "CLIENT_ID not set")
                 
                 # Create an in-memory cache with the refresh token
                 cache_handler = MemoryCacheHandler()
+                
+                # If we have an access token, try to use it; otherwise force immediate refresh
+                if ACCESS_TOKEN:
+                    # Assume token is valid for a short time to allow testing
+                    expires_at = int(time.time()) + 300  # 5 minutes
+                    self.logger.info("ACCESS_TOKEN provided, assuming valid for 5 minutes")
+                else:
+                    # Force immediate refresh by setting expiry in the past
+                    expires_at = int(time.time()) - 1
+                    self.logger.info("No ACCESS_TOKEN, will refresh immediately")
+                
                 token_info = {
                     "access_token": ACCESS_TOKEN or "",
                     "token_type": "Bearer",
                     "expires_in": 3600,
                     "refresh_token": REFRESH_TOKEN,
                     "scope": scope,
-                    "expires_at": int(time.time()) - 1 if not ACCESS_TOKEN else int(time.time()) + 3600
+                    "expires_at": expires_at
                 }
                 cache_handler.save_token_to_cache(token_info)
                 
@@ -60,7 +73,7 @@ class Client:
                     scope=scope,
                     client_id=CLIENT_ID,
                     client_secret=CLIENT_SECRET,
-                    redirect_uri=REDIRECT_URI,
+                    redirect_uri=REDIRECT_URI or "http://127.0.0.1:8888",
                     cache_handler=cache_handler
                 )
                 
@@ -68,6 +81,7 @@ class Client:
                 self.sp = spotipy.Spotify(auth_manager=auth_manager)
                 self.auth_manager = auth_manager
                 self.cache_handler = cache_handler
+                self.logger.info("Spotify client initialized with refresh token")
                 
             elif ACCESS_TOKEN:
                 # Use provided access token directly (no refresh capability)
@@ -376,34 +390,57 @@ class Client:
 
     def auth_ok(self) -> bool:
         try:
-            if ACCESS_TOKEN:
+            # If using direct access token without refresh capability
+            if ACCESS_TOKEN and not self.auth_manager:
                 # When using direct token, we can't check expiration easily
                 # Try a simple API call to verify token is valid
                 try:
                     self.sp.current_user()
-                    self.logger.info("Auth check result: token valid")
+                    self.logger.info("Auth check result: token valid (direct token)")
                     return True
-                except:
-                    self.logger.info("Auth check result: token invalid")
+                except Exception as e:
+                    self.logger.info(f"Auth check result: token invalid (direct token) - {str(e)}")
                     return False
             
-            token = self.cache_handler.get_cached_token()
-            if token is None:
-                self.logger.info("Auth check result: no token exists")
-                return False
-                
-            is_expired = self.auth_manager.is_token_expired(token)
-            self.logger.info(f"Auth check result: {'valid' if not is_expired else 'expired'}")
-            return not is_expired  # Return True if token is NOT expired
+            # If using auth manager (either OAuth flow or refresh token)
+            if self.auth_manager and self.cache_handler:
+                token = self.cache_handler.get_cached_token()
+                if token is None:
+                    self.logger.info("Auth check result: no token exists in cache")
+                    return False
+                    
+                is_expired = self.auth_manager.is_token_expired(token)
+                self.logger.info(f"Auth check result: token {'expired' if is_expired else 'valid'} (managed token)")
+                return not is_expired  # Return True if token is NOT expired
+            
+            # No auth method available
+            self.logger.error("Auth check result: no authentication method available")
+            return False
+            
         except Exception as e:
-            self.logger.error(f"Error checking auth status: {str(e)}")
+            self.logger.error(f"Error checking auth status: {str(e)}", exc_info=True)
             return False  # Return False on error rather than raising
 
     def auth_refresh(self):
         if not self.auth_manager:
             self.logger.warning("Cannot refresh token without auth manager")
             return
-        self.auth_manager.validate_token(self.cache_handler.get_cached_token())
+        
+        try:
+            self.logger.info("Attempting to refresh authentication token")
+            token = self.cache_handler.get_cached_token()
+            refreshed_token = self.auth_manager.validate_token(token)
+            
+            if refreshed_token:
+                self.logger.info("Token refreshed successfully")
+                # Update the Spotify client with the new token
+                if refreshed_token != token:
+                    self.sp._auth = refreshed_token.get('access_token')
+            else:
+                self.logger.error("Failed to refresh token")
+        except Exception as e:
+            self.logger.error(f"Error refreshing token: {str(e)}", exc_info=True)
+            raise
 
     def skip_track(self, n=1):
         # todo: Better error handling

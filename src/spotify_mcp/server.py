@@ -35,17 +35,105 @@ def setup_logger():
         def info(self, message):
             print(f"[INFO] {message}", file=sys.stderr)
 
-        def error(self, message):
+        def error(self, message, exc_info=False):
             print(f"[ERROR] {message}", file=sys.stderr)
+            if exc_info:
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+
+        def warning(self, message):
+            print(f"[WARNING] {message}", file=sys.stderr)
+
+        def debug(self, message):
+            if os.getenv("DEBUG"):
+                print(f"[DEBUG] {message}", file=sys.stderr)
 
     return Logger()
 
 
 logger = setup_logger()
+
+# Log environment configuration
+logger.info("Initializing Spotify MCP Server")
+logger.info(f"Environment variables loaded:")
+logger.info(f"  CLIENT_ID: {'Set' if spotify_api.CLIENT_ID else 'Not set'}")
+logger.info(f"  CLIENT_SECRET: {'Set' if spotify_api.CLIENT_SECRET else 'Not set'}")
+logger.info(f"  REDIRECT_URI: {spotify_api.REDIRECT_URI if spotify_api.REDIRECT_URI else 'Not set'}")
+logger.info(f"  ACCESS_TOKEN: {'Set' if spotify_api.ACCESS_TOKEN else 'Not set'}")
+logger.info(f"  REFRESH_TOKEN: {'Set' if spotify_api.REFRESH_TOKEN else 'Not set'}")
+logger.info(f"  DEVICE_ID: {spotify_api.DEFAULT_DEVICE_ID if spotify_api.DEFAULT_DEVICE_ID else 'Not set'}")
+
 # Normalize the redirect URI to meet Spotify's requirements
 if spotify_api.REDIRECT_URI:
     spotify_api.REDIRECT_URI = normalize_redirect_uri(spotify_api.REDIRECT_URI)
+    logger.info(f"  Normalized REDIRECT_URI: {spotify_api.REDIRECT_URI}")
+
+# Initialize Spotify client
+logger.info("Creating Spotify client...")
 spotify_client = spotify_api.Client(logger)
+logger.info("Spotify client created successfully")
+
+# Verify authentication and log user info
+logger.info("Verifying authentication...")
+try:
+    if spotify_client.auth_ok():
+        logger.info("Authentication successful!")
+        
+        # Get and log user information
+        try:
+            user_info = spotify_client.sp.current_user()
+            logger.info("User Information:")
+            logger.info(f"  Display Name: {user_info.get('display_name', 'N/A')}")
+            logger.info(f"  User ID: {user_info.get('id', 'N/A')}")
+            logger.info(f"  Email: {user_info.get('email', 'N/A')}")
+            logger.info(f"  Country: {user_info.get('country', 'N/A')}")
+            logger.info(f"  Product: {user_info.get('product', 'N/A')}")
+            
+            # Set username for playlist operations
+            spotify_client.username = user_info.get('display_name')
+            
+            # Check for active devices
+            try:
+                devices = spotify_client.get_devices()
+                if devices:
+                    logger.info(f"Found {len(devices)} Spotify device(s):")
+                    for device in devices:
+                        status = "ACTIVE" if device.get('is_active') else "Inactive"
+                        logger.info(f"  - {device['name']} ({device['type']}): {status}")
+                        if spotify_api.DEFAULT_DEVICE_ID and device['id'] == spotify_api.DEFAULT_DEVICE_ID:
+                            logger.info(f"    ^ This is the configured default device")
+                else:
+                    logger.warning("No Spotify devices found. Make sure Spotify is open on at least one device.")
+            except Exception as e:
+                logger.warning(f"Could not retrieve devices: {str(e)}")
+                
+        except Exception as e:
+            logger.error(f"Failed to get user information: {str(e)}")
+            logger.warning("Server will continue but some features may not work properly")
+    else:
+        logger.error("Authentication failed!")
+        logger.error("Please check your credentials and tokens:")
+        logger.error("  1. Run 'python auth.py' to get fresh tokens")
+        logger.error("  2. Ensure CLIENT_ID and CLIENT_SECRET are correct")
+        logger.error("  3. Check that tokens haven't been revoked")
+        
+        # Try to refresh if we have a refresh token
+        if spotify_api.REFRESH_TOKEN:
+            logger.info("Attempting to refresh authentication...")
+            try:
+                spotify_client.auth_refresh()
+                if spotify_client.auth_ok():
+                    logger.info("Authentication refreshed successfully!")
+                    user_info = spotify_client.sp.current_user()
+                    logger.info(f"Logged in as: {user_info.get('display_name', 'Unknown')}")
+                    spotify_client.username = user_info.get('display_name')
+                else:
+                    logger.error("Authentication refresh failed")
+            except Exception as e:
+                logger.error(f"Failed to refresh authentication: {str(e)}")
+except Exception as e:
+    logger.error(f"Authentication verification failed: {str(e)}", exc_info=True)
+    logger.warning("Server will start but authentication may not work properly")
 
 app = Server("spotify-mcp")
 
