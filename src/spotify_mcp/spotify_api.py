@@ -182,7 +182,9 @@ class Client:
         - spotify_uri: ID of resource to play, or None. Typically looks like 'spotify:track:xxxxxx' or 'spotify:album:xxxxxx'.
         """
         try:
-            self.logger.info(f"Starting playback for spotify_uri: {spotify_uri} on {device}")
+            self.logger.info(f"start_playback called with spotify_uri: {spotify_uri}, device: {device}")
+            self.logger.info(f"DEFAULT_DEVICE_ID is: {DEFAULT_DEVICE_ID}")
+            
             if not spotify_uri:
                 if self.is_track_playing():
                     self.logger.info("No track_id provided and playback already active.")
@@ -202,13 +204,13 @@ class Client:
                 context_uri = None
 
             device_id = device.get('id') if device else DEFAULT_DEVICE_ID
-
-            self.logger.info(f"Starting playback of on {device or DEFAULT_DEVICE_ID}: context_uri={context_uri}, uris={uris}")
+            
+            self.logger.info(f"About to call Spotify API with device_id={device_id}, context_uri={context_uri}, uris={uris}")
             result = self.sp.start_playback(uris=uris, context_uri=context_uri, device_id=device_id)
-            self.logger.info(f"Playback result: {result}")
+            self.logger.info(f"Spotify API returned: {result}")
             return result
         except Exception as e:
-            self.logger.error(f"Error starting playback: {str(e)}.")
+            self.logger.error(f"Error in start_playback: {str(e)}", exc_info=True)
             raise
 
     @utils.validate

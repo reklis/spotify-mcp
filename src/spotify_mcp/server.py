@@ -169,12 +169,30 @@ async def handle_call_tool(
                         )]
                     case "start":
                         logger.info(f"Starting playback with arguments: {arguments}")
-                        spotify_client.start_playback(spotify_uri=arguments.get("spotify_uri"))
-                        logger.info("Playback started successfully")
-                        return [types.TextContent(
-                            type="text",
-                            text="Playback starting."
-                        )]
+                        spotify_uri = arguments.get("spotify_uri")
+                        
+                        try:
+                            logger.info(f"Calling start_playback with URI: {spotify_uri}")
+                            result = spotify_client.start_playback(spotify_uri=spotify_uri)
+                            logger.info(f"start_playback returned: {result}")
+                            
+                            # Set volume if specified
+                            volume = arguments.get("volume_percent")
+                            if volume is not None:
+                                logger.info(f"Setting volume to {volume}%")
+                                spotify_client.set_volume(volume)
+                            
+                            logger.info("Playback started successfully")
+                            return [types.TextContent(
+                                type="text",
+                                text=f"Playback starting{f' at {volume}% volume' if volume is not None else ''}."
+                            )]
+                        except Exception as e:
+                            logger.error(f"Failed to start playback: {str(e)}", exc_info=True)
+                            return [types.TextContent(
+                                type="text",
+                                text=f"Failed to start playback: {str(e)}"
+                            )]
                     case "pause":
                         logger.info("Attempting to pause playback")
                         spotify_client.pause_playback()
