@@ -17,6 +17,7 @@ CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
 ACCESS_TOKEN = os.getenv("SPOTIFY_ACCESS_TOKEN")
 REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
+DEFAULT_DEVICE_ID = os.getenv("SPOTIFY_DEVICE_ID")
 
 # Normalize the redirect URI to meet Spotify's requirements
 if REDIRECT_URI:
@@ -200,9 +201,9 @@ class Client:
                 uris = None
                 context_uri = None
 
-            device_id = device.get('id') if device else None
+            device_id = device.get('id') if device else DEFAULT_DEVICE_ID
 
-            self.logger.info(f"Starting playback of on {device}: context_uri={context_uri}, uris={uris}")
+            self.logger.info(f"Starting playback of on {device or DEFAULT_DEVICE_ID}: context_uri={context_uri}, uris={uris}")
             result = self.sp.start_playback(uris=uris, context_uri=context_uri, device_id=device_id)
             self.logger.info(f"Playback result: {result}")
             return result
@@ -215,7 +216,7 @@ class Client:
         """Pauses playback."""
         playback = self.sp.current_playback()
         if playback and playback.get('is_playing'):
-            self.sp.pause_playback(device.get('id') if device else None)
+            self.sp.pause_playback(device.get('id') if device else DEFAULT_DEVICE_ID)
 
     @utils.validate
     def add_to_queue(self, track_id: str, device=None):
@@ -223,7 +224,7 @@ class Client:
         Adds track to queue.
         - track_id: ID of track to play.
         """
-        self.sp.add_to_queue(track_id, device.get('id') if device else None)
+        self.sp.add_to_queue(track_id, device.get('id') if device else DEFAULT_DEVICE_ID)
 
     @utils.validate
     def get_queue(self, device=None):
@@ -405,13 +406,13 @@ class Client:
     def skip_track(self, n=1):
         # todo: Better error handling
         for _ in range(n):
-            self.sp.next_track()
+            self.sp.next_track(device_id=DEFAULT_DEVICE_ID)
 
     def previous_track(self):
-        self.sp.previous_track()
+        self.sp.previous_track(device_id=DEFAULT_DEVICE_ID)
 
     def seek_to_position(self, position_ms):
-        self.sp.seek_track(position_ms=position_ms)
+        self.sp.seek_track(position_ms=position_ms, device_id=DEFAULT_DEVICE_ID)
 
     def set_volume(self, volume_percent):
-        self.sp.volume(volume_percent)
+        self.sp.volume(volume_percent, device_id=DEFAULT_DEVICE_ID)
