@@ -17,7 +17,8 @@ CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
 ACCESS_TOKEN = os.getenv("SPOTIFY_ACCESS_TOKEN")
 REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
-DEFAULT_DEVICE_ID = os.getenv("SPOTIFY_DEVICE_ID")
+DEFAULT_DEVICE_NAME = os.getenv("SPOTIFY_DEVICE_NAME")
+DEFAULT_DEVICE_ID = None  # Will be set based on device name
 
 # Normalize the redirect URI to meet Spotify's requirements
 if REDIRECT_URI:
@@ -398,6 +399,38 @@ class Client:
 
     def is_active_device(self):
         return any([device.get('is_active') for device in self.get_devices()])
+    
+    def find_device_by_name(self, device_name: str) -> Optional[str]:
+        """Find a device ID by its name."""
+        if not device_name:
+            return None
+        
+        try:
+            devices = self.get_devices()
+            for device in devices:
+                if device.get('name') == device_name:
+                    self.logger.info(f"Found device '{device_name}' with ID: {device['id']}")
+                    return device['id']
+            self.logger.warning(f"Device '{device_name}' not found among available devices")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error finding device by name: {str(e)}")
+            return None
+    
+    def setup_default_device(self):
+        """Set up the default device ID based on the device name from environment."""
+        global DEFAULT_DEVICE_ID
+        
+        if DEFAULT_DEVICE_NAME:
+            self.logger.info(f"Looking up device with name: {DEFAULT_DEVICE_NAME}")
+            device_id = self.find_device_by_name(DEFAULT_DEVICE_NAME)
+            if device_id:
+                DEFAULT_DEVICE_ID = device_id
+                self.logger.info(f"Default device ID set to: {DEFAULT_DEVICE_ID}")
+            else:
+                self.logger.warning(f"Could not find device '{DEFAULT_DEVICE_NAME}'. Will use dynamic device selection.")
+        else:
+            self.logger.info("No default device name configured")
 
     def _get_candidate_device(self):
         devices = self.get_devices()

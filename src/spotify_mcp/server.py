@@ -61,7 +61,7 @@ logger.info(f"  CLIENT_SECRET: {'Set' if spotify_api.CLIENT_SECRET else 'Not set
 logger.info(f"  REDIRECT_URI: {spotify_api.REDIRECT_URI if spotify_api.REDIRECT_URI else 'Not set'}")
 logger.info(f"  ACCESS_TOKEN: {'Set' if spotify_api.ACCESS_TOKEN else 'Not set'}")
 logger.info(f"  REFRESH_TOKEN: {'Set' if spotify_api.REFRESH_TOKEN else 'Not set'}")
-logger.info(f"  DEVICE_ID: {spotify_api.DEFAULT_DEVICE_ID if spotify_api.DEFAULT_DEVICE_ID else 'Not set'}")
+logger.info(f"  DEVICE_NAME: {spotify_api.DEFAULT_DEVICE_NAME if spotify_api.DEFAULT_DEVICE_NAME else 'Not set'}")
 
 # Normalize the redirect URI to meet Spotify's requirements
 if spotify_api.REDIRECT_URI:
@@ -92,7 +92,7 @@ try:
             # Set username for playlist operations
             spotify_client.username = user_info.get('display_name')
             
-            # Check for active devices
+            # Check for active devices and set up default device
             try:
                 devices = spotify_client.get_devices()
                 if devices:
@@ -100,8 +100,16 @@ try:
                     for device in devices:
                         status = "ACTIVE" if device.get('is_active') else "Inactive"
                         logger.info(f"  - {device['name']} ({device['type']}): {status}")
-                        if spotify_api.DEFAULT_DEVICE_ID and device['id'] == spotify_api.DEFAULT_DEVICE_ID:
-                            logger.info(f"    ^ This is the configured default device")
+                    
+                    # Set up default device by name
+                    spotify_client.setup_default_device()
+                    
+                    # Show which device is the default
+                    if spotify_api.DEFAULT_DEVICE_ID:
+                        for device in devices:
+                            if device['id'] == spotify_api.DEFAULT_DEVICE_ID:
+                                logger.info(f"Default device set: {device['name']} ({device['type']})")
+                                break
                 else:
                     logger.warning("No Spotify devices found. Make sure Spotify is open on at least one device.")
             except Exception as e:

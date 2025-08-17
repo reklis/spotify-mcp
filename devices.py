@@ -117,12 +117,13 @@ def main():
         print(f"Device ID: {device_id}")
         
         env_path = ".env"
-        print(f"\nSaving device ID to {env_path}...")
-        set_key(env_path, "SPOTIFY_DEVICE_ID", device_id)
+        print(f"\nSaving device name to {env_path}...")
+        set_key(env_path, "SPOTIFY_DEVICE_NAME", device_name)
         
-        print("Device ID saved successfully!")
+        print("Device name saved successfully!")
         print(f"\nYou can now use this device as the default for all Spotify operations.")
-        print(f"The environment variable SPOTIFY_DEVICE_ID has been set to: {device_id}")
+        print(f"The environment variable SPOTIFY_DEVICE_NAME has been set to: {device_name}")
+        print(f"The device will be looked up by name when the server starts.")
         
     except Exception as e:
         print(f"\nError: {str(e)}")
