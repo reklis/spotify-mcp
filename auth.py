@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
 Spotify OAuth Token Generator
-Runs the OAuth flow to get access and refresh tokens, then saves them to .env
+Runs the OAuth flow to get access and refresh tokens, then saves them to creds.json
 """
 
 import os
 import sys
+import json
+from pathlib import Path
 from dotenv import load_dotenv, set_key
 from spotipy.oauth2 import SpotifyOAuth
 
@@ -80,17 +82,70 @@ def main():
     print(f"Access Token: {access_token[:20]}...")
     print(f"Refresh Token: {refresh_token[:20]}...")
     
-    # Save to .env file
+    # Save to .env file (for local development)
     env_path = ".env"
     print(f"\nSaving tokens to {env_path}...")
     
-    set_key(env_path, "SPOTIFY_ACCESS_TOKEN", access_token)
-    set_key(env_path, "SPOTIFY_REFRESH_TOKEN", refresh_token)
+    # Read existing .env content
+    env_lines = []
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            env_lines = f.readlines()
     
-    print("Tokens saved successfully!")
-    print("\nYou can now use these tokens in your Docker container by setting:")
-    print("  SPOTIFY_ACCESS_TOKEN")
-    print("  SPOTIFY_REFRESH_TOKEN")
+    # Update or add token lines
+    access_token_set = False
+    refresh_token_set = False
+    
+    for i, line in enumerate(env_lines):
+        if line.startswith('SPOTIFY_ACCESS_TOKEN='):
+            env_lines[i] = f'SPOTIFY_ACCESS_TOKEN={access_token}\n'
+            access_token_set = True
+        elif line.startswith('SPOTIFY_REFRESH_TOKEN='):
+            env_lines[i] = f'SPOTIFY_REFRESH_TOKEN={refresh_token}\n'
+            refresh_token_set = True
+    
+    # Add tokens if not found
+    if not access_token_set:
+        env_lines.append(f'SPOTIFY_ACCESS_TOKEN={access_token}\n')
+    if not refresh_token_set:
+        env_lines.append(f'SPOTIFY_REFRESH_TOKEN={refresh_token}\n')
+    
+    # Write back to file
+    with open(env_path, 'w') as f:
+        f.writelines(env_lines)
+    
+    # Also save to creds.json in current directory for persistent storage
+    creds_file = Path("creds.json")
+    
+    # Load existing creds or create new
+    creds = {}
+    if creds_file.exists():
+        try:
+            with open(creds_file, 'r') as f:
+                creds = json.load(f)
+        except:
+            pass
+    
+    # Update with new tokens
+    creds.update({
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI,
+        "access_token": access_token,
+        "refresh_token": refresh_token
+    })
+    
+    # Save to file
+    try:
+        with open(creds_file, 'w') as f:
+            json.dump(creds, f, indent=2)
+        print(f"\nAlso saved to {creds_file} for persistent storage")
+    except Exception as e:
+        print(f"Note: Could not save to {creds_file}: {e}")
+    
+    print("\nTokens saved successfully!")
+    print("\nYou can now use these tokens in your Docker container.")
+    print("Mount /config as a volume to persist tokens across container restarts.")
     print("\nThe refresh token will be used to automatically get new access tokens as needed.")
 
 if __name__ == "__main__":

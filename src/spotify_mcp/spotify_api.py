@@ -9,15 +9,20 @@ from spotipy.cache_handler import CacheFileHandler, MemoryCacheHandler
 from spotipy.oauth2 import SpotifyOAuth
 
 from . import utils
+from .creds_manager import CredsManager
 
 load_dotenv()
 
-CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
-ACCESS_TOKEN = os.getenv("SPOTIFY_ACCESS_TOKEN")
-REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
-DEFAULT_DEVICE_NAME = os.getenv("SPOTIFY_DEVICE_NAME")
+# Initialize credential manager
+creds_manager = CredsManager()
+
+# Load credentials from manager (which handles env vars and file)
+CLIENT_ID = creds_manager.get_client_id()
+CLIENT_SECRET = creds_manager.get_client_secret()
+REDIRECT_URI = creds_manager.get_redirect_uri()
+ACCESS_TOKEN = creds_manager.get_access_token()
+REFRESH_TOKEN = creds_manager.get_refresh_token()
+DEFAULT_DEVICE_NAME = creds_manager.get_device_name()
 DEFAULT_DEVICE_ID = None  # Will be set based on device name
 
 # Normalize the redirect URI to meet Spotify's requirements
@@ -37,6 +42,10 @@ class Client:
     def __init__(self, logger: logging.Logger):
         """Initialize Spotify client with necessary permissions"""
         self.logger = logger
+        # Set logger for creds_manager if not already set
+        if not creds_manager.logger:
+            creds_manager.logger = logger
+        self.creds_manager = creds_manager  # Store reference to credential manager
 
         scope = "user-library-read,user-read-playback-state,user-modify-playback-state,user-read-currently-playing,playlist-read-private,playlist-read-collaborative,playlist-modify-private,playlist-modify-public"
 
@@ -84,9 +93,13 @@ class Client:
                             self.logger.info("Access token refreshed successfully")
                             
                             # Update refresh token if a new one was provided
-                            if token_data.get("refresh_token"):
-                                refresh_token = token_data.get("refresh_token")
+                            new_refresh = token_data.get("refresh_token")
+                            if new_refresh:
+                                refresh_token = new_refresh
                                 self.logger.info("Refresh token also updated")
+                            
+                            # Save updated tokens to persistent storage
+                            self.creds_manager.update_tokens(access_token, new_refresh or refresh_token)
                         else:
                             self.logger.error(f"Failed to refresh token: {response.status_code} - {response.text}")
                     except Exception as e:
@@ -502,8 +515,12 @@ class Client:
                     self.sp._auth = self.access_token  # Update spotipy's auth
                     self.logger.info("Token refreshed successfully")
                     
-                    if token_data.get("refresh_token"):
-                        self.refresh_token = token_data.get("refresh_token")
+                    new_refresh = token_data.get("refresh_token")
+                    if new_refresh:
+                        self.refresh_token = new_refresh
+                    
+                    # Save updated tokens to persistent storage
+                    self.creds_manager.update_tokens(self.access_token, self.refresh_token)
                 else:
                     self.logger.error(f"Failed to refresh token: {response.status_code}")
             except Exception as e:

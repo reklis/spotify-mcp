@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
 Spotify Device Selector
-Lists available Spotify devices and saves the selected device ID to .env
+Lists available Spotify devices and saves the selected device name to .env and creds.json
 """
 
 import os
 import sys
+import json
+from pathlib import Path
 from dotenv import load_dotenv, set_key
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
@@ -116,11 +118,57 @@ def main():
         print(f"\nSelected: {device_name}")
         print(f"Device ID: {device_id}")
         
+        # Save to .env file
         env_path = ".env"
         print(f"\nSaving device name to {env_path}...")
-        set_key(env_path, "SPOTIFY_DEVICE_NAME", device_name)
         
-        print("Device name saved successfully!")
+        # Read existing .env content
+        env_lines = []
+        if os.path.exists(env_path):
+            with open(env_path, 'r') as f:
+                env_lines = f.readlines()
+        
+        # Update or add device name line
+        device_name_set = False
+        
+        for i, line in enumerate(env_lines):
+            if line.startswith('SPOTIFY_DEVICE_NAME='):
+                env_lines[i] = f'SPOTIFY_DEVICE_NAME={device_name}\n'
+                device_name_set = True
+                break
+        
+        # Add device name if not found
+        if not device_name_set:
+            env_lines.append(f'SPOTIFY_DEVICE_NAME={device_name}\n')
+        
+        # Write back to file
+        with open(env_path, 'w') as f:
+            f.writelines(env_lines)
+        
+        # Also save to creds.json in current directory for persistent storage
+        creds_file = Path("creds.json")
+        
+        # Load existing creds or create new
+        creds = {}
+        if creds_file.exists():
+            try:
+                with open(creds_file, 'r') as f:
+                    creds = json.load(f)
+            except:
+                pass
+        
+        # Update with device name
+        creds["device_name"] = device_name
+        
+        # Save to file
+        try:
+            with open(creds_file, 'w') as f:
+                json.dump(creds, f, indent=2)
+            print(f"Also saved to {creds_file} for persistent storage")
+        except Exception as e:
+            print(f"Note: Could not save to {creds_file}: {e}")
+        
+        print("\nDevice name saved successfully!")
         print(f"\nYou can now use this device as the default for all Spotify operations.")
         print(f"The environment variable SPOTIFY_DEVICE_NAME has been set to: {device_name}")
         print(f"The device will be looked up by name when the server starts.")
