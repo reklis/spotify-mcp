@@ -13,8 +13,21 @@ from .creds_manager import CredsManager
 
 load_dotenv()
 
-# Initialize credential manager
-creds_manager = CredsManager()
+# Create a simple logger for the credential manager
+import sys
+class SimpleLogger:
+    def info(self, message):
+        print(f"[CredsManager INFO] {message}", file=sys.stderr)
+    def error(self, message, exc_info=False):
+        print(f"[CredsManager ERROR] {message}", file=sys.stderr)
+        if exc_info:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+    def warning(self, message):
+        print(f"[CredsManager WARNING] {message}", file=sys.stderr)
+
+# Initialize credential manager with logger
+creds_manager = CredsManager(logger=SimpleLogger())
 
 # Load credentials from manager (which handles env vars and file)
 CLIENT_ID = creds_manager.get_client_id()
@@ -23,6 +36,7 @@ REDIRECT_URI = creds_manager.get_redirect_uri()
 ACCESS_TOKEN = creds_manager.get_access_token()
 REFRESH_TOKEN = creds_manager.get_refresh_token()
 DEFAULT_DEVICE_NAME = creds_manager.get_device_name()
+TOKEN_EXPIRES_AT = creds_manager.get_token_expires_at()
 DEFAULT_DEVICE_ID = None  # Will be set based on device name
 
 # Normalize the redirect URI to meet Spotify's requirements
@@ -42,12 +56,14 @@ class Client:
     def __init__(self, logger: logging.Logger):
         """Initialize Spotify client with necessary permissions"""
         self.logger = logger
-        # Set logger for creds_manager if not already set
-        if not creds_manager.logger:
-            creds_manager.logger = logger
+        # Update creds_manager logger to use the provided logger for better integration
+        creds_manager.logger = logger
         self.creds_manager = creds_manager  # Store reference to credential manager
 
         scope = "user-library-read,user-read-playback-state,user-modify-playback-state,user-read-currently-playing,playlist-read-private,playlist-read-collaborative,playlist-modify-private,playlist-modify-public"
+
+        # Track token expiration time - load from saved credentials if available
+        self.token_expires_at = TOKEN_EXPIRES_AT
 
         try:
             if REFRESH_TOKEN or ACCESS_TOKEN:
@@ -60,7 +76,14 @@ class Client:
                 access_token = ACCESS_TOKEN
                 refresh_token = REFRESH_TOKEN
                 
-                if refresh_token and (not access_token or len(access_token) < 50):
+                # Check if token is expired or missing
+                token_is_expired = False
+                if self.token_expires_at:
+                    token_is_expired = time.time() >= (self.token_expires_at - 60)
+                    if token_is_expired:
+                        self.logger.info(f"Stored token has expired (expired at {self.token_expires_at}, current time {time.time()})")
+                
+                if refresh_token and (not access_token or len(access_token) < 50 or token_is_expired):
                     # Need to refresh the access token
                     self.logger.info("Refreshing access token using refresh token...")
                     import requests
@@ -92,6 +115,10 @@ class Client:
                             access_token = token_data.get("access_token")
                             self.logger.info("Access token refreshed successfully")
                             
+                            # Track token expiration (Spotify tokens expire after 1 hour)
+                            expires_in = token_data.get("expires_in", 3600)
+                            self.token_expires_at = time.time() + expires_in
+                            
                             # Update refresh token if a new one was provided
                             new_refresh = token_data.get("refresh_token")
                             if new_refresh:
@@ -99,7 +126,7 @@ class Client:
                                 self.logger.info("Refresh token also updated")
                             
                             # Save updated tokens to persistent storage
-                            self.creds_manager.update_tokens(access_token, new_refresh or refresh_token)
+                            self.creds_manager.update_tokens(access_token, new_refresh or refresh_token, self.token_expires_at)
                         else:
                             self.logger.error(f"Failed to refresh token: {response.status_code} - {response.text}")
                     except Exception as e:
@@ -115,6 +142,26 @@ class Client:
                     self.refresh_token = refresh_token
                     self.auth_manager = None
                     self.cache_handler = None
+                    
+                    # If we don't know expiration, assume 1 hour from now
+                    if not self.token_expires_at:
+                        self.token_expires_at = time.time() + 3600
+                    
+                    # Save the working credentials back to the config file
+                    self.logger.info("Saving working credentials to config file")
+                    self.creds_manager.update_tokens(access_token, refresh_token, self.token_expires_at)
+                    
+                    # Also save client credentials if they were from env vars
+                    if CLIENT_ID and not self.creds_manager.get_client_id():
+                        self.creds_manager.creds["client_id"] = CLIENT_ID
+                    if CLIENT_SECRET and not self.creds_manager.get_client_secret():
+                        self.creds_manager.creds["client_secret"] = CLIENT_SECRET
+                    if REDIRECT_URI and not self.creds_manager.get_redirect_uri():
+                        self.creds_manager.creds["redirect_uri"] = REDIRECT_URI
+                    if DEFAULT_DEVICE_NAME and not self.creds_manager.get_device_name():
+                        self.creds_manager.creds["device_name"] = DEFAULT_DEVICE_NAME
+                    
+                    self.creds_manager.save_credentials()
                 else:
                     raise ValueError("No valid access token available and couldn't refresh")
                 
@@ -124,6 +171,12 @@ class Client:
                 self.sp = spotipy.Spotify(auth=ACCESS_TOKEN)
                 self.auth_manager = None
                 self.cache_handler = None
+                self.access_token = ACCESS_TOKEN
+                self.refresh_token = None
+                self.token_expires_at = time.time() + 3600
+                
+                # Save to config
+                self.creds_manager.update_tokens(ACCESS_TOKEN, None, self.token_expires_at)
             else:
                 # Use OAuth flow with file cache
                 self.sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
@@ -134,6 +187,17 @@ class Client:
 
                 self.auth_manager: SpotifyOAuth = self.sp.auth_manager
                 self.cache_handler: CacheFileHandler = self.auth_manager.cache_handler
+                
+                # Extract tokens from OAuth and save them
+                token_info = self.auth_manager.get_access_token(as_dict=True)
+                if token_info:
+                    self.access_token = token_info.get('access_token')
+                    self.refresh_token = token_info.get('refresh_token')
+                    expires_in = token_info.get('expires_in', 3600)
+                    self.token_expires_at = time.time() + expires_in
+                    
+                    # Save OAuth tokens to our config
+                    self.creds_manager.update_tokens(self.access_token, self.refresh_token, self.token_expires_at)
         except Exception as e:
             self.logger.error(f"Failed to initialize Spotify client: {str(e)}")
             raise
@@ -459,9 +523,16 @@ class Client:
         try:
             # When using direct tokens
             if hasattr(self, 'access_token') and self.access_token:
-                # Assume token is valid - actual API calls will fail if not
-                self.logger.info("Auth check result: using stored access token")
-                return True
+                # Check if token has expired based on tracked expiration time
+                if hasattr(self, 'token_expires_at') and self.token_expires_at:
+                    # Add 60 second buffer before expiration to avoid edge cases
+                    is_expired = time.time() >= (self.token_expires_at - 60)
+                    self.logger.info(f"Auth check result: token {'expired' if is_expired else 'valid'} (expires at {self.token_expires_at}, current time {time.time()})")
+                    return not is_expired
+                else:
+                    # If we don't have expiration info, assume valid
+                    self.logger.info("Auth check result: using stored access token (no expiration info)")
+                    return True
             
             # If using auth manager (OAuth flow)
             if self.auth_manager and self.cache_handler:
@@ -512,15 +583,21 @@ class Client:
                 if response.status_code == 200:
                     token_data = response.json()
                     self.access_token = token_data.get("access_token")
-                    self.sp._auth = self.access_token  # Update spotipy's auth
-                    self.logger.info("Token refreshed successfully")
+                    # Recreate the Spotipy client with the new token
+                    self.sp = spotipy.Spotify(auth=self.access_token)
+                    self.logger.info("Token refreshed successfully and Spotipy client updated")
+                    
+                    # Update token expiration time
+                    expires_in = token_data.get("expires_in", 3600)
+                    self.token_expires_at = time.time() + expires_in
+                    self.logger.info(f"Token will expire in {expires_in} seconds")
                     
                     new_refresh = token_data.get("refresh_token")
                     if new_refresh:
                         self.refresh_token = new_refresh
                     
                     # Save updated tokens to persistent storage
-                    self.creds_manager.update_tokens(self.access_token, self.refresh_token)
+                    self.creds_manager.update_tokens(self.access_token, self.refresh_token, self.token_expires_at)
                 else:
                     self.logger.error(f"Failed to refresh token: {response.status_code}")
             except Exception as e:
